@@ -1,7 +1,7 @@
 import csv, io, json, time
 from pathlib import Path
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session, joinedload
 from starlette.middleware.sessions import SessionMiddleware
 from .auth import verify_password
@@ -18,6 +18,11 @@ attempts = {}
 def user(request: Request):
     if request.session.get("user") != APP_USERNAME: raise HTTPException(401)
 def render(request, name, **context): return HTMLResponse(environment.get_template(name).render(request=request, **context))
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if exc.status_code == 401:
+        return RedirectResponse("/login", status_code=303)
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
 @app.get("/health")
 def health(): return {"status": "ok"}
 @app.get("/login", response_class=HTMLResponse)
