@@ -21,7 +21,13 @@ jobs:
             ssh-keyscan github.com >> "$HOME/.ssh/known_hosts"
             if [ ! -d "$APP_DIR/.git" ]; then git clone "$REPO_URL" "$APP_DIR"; fi
             cd "$APP_DIR" && git fetch origin main && git reset --hard origin/main
-            printf 'APP_USERNAME=%s\nAPP_PASSWORD_HASH=%s\nSESSION_SECRET=%s\nDEEPSEEK_API_KEY=%s\nGOOGLE_BOOKS_API_KEY=%s\n' "${{ secrets.APP_USERNAME }}" "${{ secrets.APP_PASSWORD_HASH }}" "${{ secrets.SESSION_SECRET }}" "${{ secrets.DEEPSEEK_API_KEY }}" "${{ secrets.GOOGLE_BOOKS_API_KEY }}" > .env
+            cat > .env <<'ENVEOF'
+            APP_USERNAME=${{ secrets.APP_USERNAME }}
+            APP_PASSWORD_HASH=${{ secrets.APP_PASSWORD_HASH }}
+            SESSION_SECRET=${{ secrets.SESSION_SECRET }}
+            DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }}
+            GOOGLE_BOOKS_API_KEY=${{ secrets.GOOGLE_BOOKS_API_KEY }}
+            ENVEOF
             if [ ! -f docker-compose.override.yml ]; then
               printf 'services:\n  readtrackr:\n    ports:\n      - "3005:8080"\n' > docker-compose.override.yml
             fi
