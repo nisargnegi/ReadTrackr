@@ -16,20 +16,20 @@ docker compose run --rm readtrackr python -m app.auth hash-password
 
 ## Deployment
 
-ReadTrackr follows the VPS-wide reverse-proxy architecture: it exposes host port `3005` and **does not** bundle Caddy. The GitHub Actions workflow creates this project-local `docker-compose.override.yml` on its first deployment:
+ReadTrackr follows the VPS-wide reverse-proxy architecture: it exposes host port `3006` and **does not** bundle Caddy. The GitHub Actions workflow creates this project-local `docker-compose.override.yml` on its first deployment:
 
 ```yaml
 services:
   readtrackr:
     ports:
-      - "3005:8080"
+      - "3006:8080"
 ```
 
 On the VPS, add a subdomain route to `~/reverse-proxy/Caddyfile` (preferred because the app uses normal root-relative URLs):
 
 ```caddyfile
 books.your-domain.duckdns.org {
-    reverse_proxy host.docker.internal:3005
+    reverse_proxy host.docker.internal:3006
 }
 ```
 

@@ -29,6 +29,6 @@ jobs:
             GOOGLE_BOOKS_API_KEY=${{ secrets.GOOGLE_BOOKS_API_KEY }}
             ENVEOF
             if [ ! -f docker-compose.override.yml ]; then
-              printf 'services:\n  readtrackr:\n    ports:\n      - "3005:8080"\n' > docker-compose.override.yml
+              printf 'services:\n  readtrackr:\n    ports:\n      - "3006:8080"\n' > docker-compose.override.yml
             fi
             docker compose up -d --build
