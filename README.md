@@ -35,4 +35,15 @@ books.your-domain.duckdns.org {
 
 Then reload the existing Caddy stack from `~/reverse-proxy/`. The VPS deploy user needs an SSH deploy key with read access to this private GitHub repository, because the workflow clones using `git@github.com:nisargnegi/ReadTrackr.git`.
 
+## Cover backfill
+
+After adding `GOOGLE_BOOKS_API_KEY` to GitHub Actions secrets and deploying, run this on the VPS to enrich every book missing a cover:
+
+```bash
+cd ~/apps/readtrackr
+docker compose exec readtrackr python -m app.backfill --all
+```
+
+This calls Google Books only; it does not use DeepSeek credits.
+
 The included GitHub Actions workflow builds on the VPS on pushes to `main`. Configure the secrets listed in `.github/workflows/deploy.yml` before enabling it.
