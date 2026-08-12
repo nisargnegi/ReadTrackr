@@ -93,7 +93,11 @@ def metadata_refresh(request: Request, db: Session = Depends(get_db)):
     return render(request, "metadata.html", missing=missing, summary=summary)
 @app.get("/recommendations", response_class=HTMLResponse)
 def recommendations_page(request: Request, db: Session = Depends(get_db)):
-    user(request); recs = db.query(Recommendation).options(joinedload(Recommendation.book)).filter(Recommendation.status == "active").order_by(Recommendation.score.desc()).all()
+    user(request); rows = db.query(Recommendation).options(joinedload(Recommendation.book)).filter(Recommendation.status == "active").order_by(Recommendation.score.desc()).all()
+    seen, recs = set(), []
+    for row in rows:
+        if row.book_id not in seen:
+            seen.add(row.book_id); recs.append(row)
     return render(request, "recommendations.html", recs=recs)
 @app.post("/recommendations/refresh", response_class=HTMLResponse)
 def recommendations_refresh(request: Request, db: Session = Depends(get_db)):
@@ -101,6 +105,8 @@ def recommendations_refresh(request: Request, db: Session = Depends(get_db)):
     favorites = sorted([e for e in entries if e.rating and e.rating >= 4], key=lambda e:e.rating, reverse=True)
     authors = list(dict.fromkeys(e.book.authors for e in favorites if e.book.authors))
     excluded = {"".join(c for c in e.book.title.lower() if c.isalnum()) for e in entries}
+    previous_recommendations = db.query(Recommendation).options(joinedload(Recommendation.book)).filter(Recommendation.status.in_(["dismissed", "not_interested"])).all()
+    excluded.update("".join(c for c in recommendation.book.title.lower() if c.isalnum()) for recommendation in previous_recommendations)
     candidates = google_candidates(authors, excluded)
     if not candidates: return render(request, "recommendations.html", recs=[], error="No recommendation candidates found. Refresh book metadata first, then try again.")
     profile = {"favorite_books":[{"title":e.book.title,"author":e.book.authors,"rating":e.rating,"categories":e.book.categories or ""} for e in favorites[:20]], "avoid":[e.book.title for e in entries if e.rating and e.rating <= 2]}
@@ -110,15 +116,19 @@ def recommendations_refresh(request: Request, db: Session = Depends(get_db)):
     except Exception as exc:
         batch.status="failed"; batch.error_message=str(exc)[:1000]; db.commit(); return render(request, "recommendations.html", recs=[], error="Could not refresh recommendations: " + str(exc))
     by_title = {"".join(c for c in item["title"].lower() if c.isalnum()):item for item in candidates}
-    created = 0
+    created, selected_books = 0, set()
     for result in results:
         candidate = by_title.get("".join(c for c in result.get("title", "").lower() if c.isalnum()))
         if not candidate: continue
         book = db.query(Book).filter(Book.google_books_id == candidate["google_books_id"]).first()
         if not book:
             book = Book(title=candidate["title"], authors=candidate["author"], google_books_id=candidate["google_books_id"], thumbnail_url=candidate["thumbnail_url"] or None, categories=", ".join(candidate["categories"]) or None, description=candidate["description"] or None, published_date=candidate["published_date"], page_count=candidate["page_count"]); db.add(book); db.flush()
+        if book.id in selected_books: continue
+        selected_books.add(book.id)
         db.add(Recommendation(batch_id=batch.id, book_id=book.id, score=float(result.get("score", 0)), reason=result.get("reason", ""), matched_preferences=", ".join(result.get("matched_preferences", []))))
         created += 1
+    for recommendation in db.query(Recommendation).filter(Recommendation.status == "active").all():
+        if recommendation.batch_id != batch.id: recommendation.status = "superseded"
     batch.status="complete"; batch.result_count=created; db.commit()
     return RedirectResponse("/recommendations", 303)
 @app.post("/recommendations/{recommendation_id}/{action}")
