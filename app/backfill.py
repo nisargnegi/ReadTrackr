@@ -3,7 +3,7 @@ import argparse
 
 from .database import Base, SessionLocal, engine
 from .models import Book
-from .services import google_lookup
+from .services import refresh_metadata
 
 def main():
     parser = argparse.ArgumentParser(description="Backfill missing book covers and metadata.")
@@ -12,18 +12,16 @@ def main():
     args = parser.parse_args()
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
-    books = db.query(Book).filter(Book.thumbnail_url.is_(None)).order_by(Book.id).all() if args.all else db.query(Book).filter(Book.thumbnail_url.is_(None)).order_by(Book.id).limit(args.limit).all()
-    totals = {"checked": len(books), "updated": 0, "not_found": 0, "errors": 0}
     try:
-        for index, book in enumerate(books, 1):
-            try:
-                if google_lookup(book): totals["updated"] += 1
-                else: totals["not_found"] += 1
-            except Exception as exc:
-                totals["errors"] += 1
-                print(f"[{index}/{len(books)}] {book.title}: {exc}")
-            if index % 10 == 0: db.commit(); print(f"Processed {index}/{len(books)}")
-        db.commit()
+        if args.all:
+            totals = {"checked": 0, "updated": 0, "not_found": 0, "errors": 0}
+            while True:
+                result = refresh_metadata(db, 25)
+                for key in totals: totals[key] += result[key]
+                if result["checked"] < 25: break
+                print(f"Processed {totals['checked']} books")
+        else:
+            totals = refresh_metadata(db, args.limit)
     finally:
         db.close()
     print("Complete: " + ", ".join(f"{key}={value}" for key, value in totals.items()))

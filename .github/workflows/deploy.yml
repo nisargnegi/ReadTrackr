@@ -27,6 +27,7 @@ jobs:
             SESSION_SECRET=${{ secrets.SESSION_SECRET }}
             DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }}
             GOOGLE_BOOKS_API_KEY=${{ secrets.GOOGLE_BOOKS_API_KEY }}
+            BACKFILL_INTERVAL_SECONDS=21600
             ENVEOF
             if [ ! -f docker-compose.override.yml ]; then
               printf 'services:\n  readtrackr:\n    ports:\n      - "3006:8080"\n' > docker-compose.override.yml

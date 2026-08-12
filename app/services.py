@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 from .models import Book, UserBook
 from .config import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, GOOGLE_BOOKS_API_KEY
 
+NO_COVER_SENTINEL = "__readtrackr_no_cover__"
+
 def clean(value): return (value or "").strip()
 def norm(value): return re.sub(r"[^a-z0-9]", "", clean(value).lower())
 def rating_value(value):
@@ -78,13 +80,37 @@ def google_lookup(book: Book):
         if identifier.get("type") == "ISBN_10": book.isbn10 = identifier.get("identifier")
     return True
 
+def open_library_cover(book: Book):
+    """Find a cover through Open Library when Google Books has none."""
+    identifier = book.isbn13 or book.isbn10
+    if identifier:
+        cover_url = f"https://covers.openlibrary.org/b/isbn/{identifier}-M.jpg?default=false"
+        response = httpx.get(cover_url, timeout=10, follow_redirects=True)
+        if response.status_code == 200 and response.headers.get("content-type", "").startswith("image/"):
+            book.thumbnail_url = cover_url
+            return True
+    params = {"title": book.title, "author": book.authors, "limit": 1, "fields": "cover_i"}
+    response = httpx.get("https://openlibrary.org/search.json", params=params, timeout=10)
+    response.raise_for_status()
+    cover_id = next((item.get("cover_i") for item in response.json().get("docs", []) if item.get("cover_i")), None)
+    if not cover_id:
+        return False
+    book.thumbnail_url = f"https://covers.openlibrary.org/b/id/{cover_id}-M.jpg"
+    return True
+
 def refresh_metadata(db: Session, limit: int = 25):
-    books = db.query(Book).filter(Book.thumbnail_url.is_(None)).order_by(Book.id).limit(limit).all()
+    books = db.query(Book).filter(Book.thumbnail_url.is_(None), or_(Book.google_books_id.is_(None), Book.google_books_id != NO_COVER_SENTINEL)).order_by(Book.id).limit(limit).all()
     summary = {"checked": len(books), "updated": 0, "not_found": 0, "errors": 0}
     for book in books:
         try:
-            if google_lookup(book): summary["updated"] += 1
-            else: summary["not_found"] += 1
+            google_lookup(book)
+            if not book.thumbnail_url:
+                open_library_cover(book)
+            if book.thumbnail_url:
+                summary["updated"] += 1
+            else:
+                book.google_books_id = NO_COVER_SENTINEL
+                summary["not_found"] += 1
         except httpx.HTTPError: summary["errors"] += 1
     db.commit(); return summary
 

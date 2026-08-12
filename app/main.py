@@ -84,13 +84,13 @@ def export_library(format:str,request:Request,db:Session=Depends(get_db)):
     raise HTTPException(404)
 @app.get("/metadata", response_class=HTMLResponse)
 def metadata_page(request: Request, db: Session = Depends(get_db)):
-    user(request); missing = db.query(Book).filter(Book.thumbnail_url.is_(None)).count()
-    return render(request, "metadata.html", missing=missing)
+    user(request); total_missing = db.query(Book).filter(Book.thumbnail_url.is_(None)).count(); missing = db.query(Book).filter(Book.thumbnail_url.is_(None), Book.google_books_id != "__readtrackr_no_cover__").count() + db.query(Book).filter(Book.thumbnail_url.is_(None), Book.google_books_id.is_(None)).count()
+    return render(request, "metadata.html", missing=missing, unavailable=total_missing-missing)
 @app.post("/metadata/refresh", response_class=HTMLResponse)
 def metadata_refresh(request: Request, db: Session = Depends(get_db)):
     user(request); summary = refresh_metadata(db)
-    missing = db.query(Book).filter(Book.thumbnail_url.is_(None)).count()
-    return render(request, "metadata.html", missing=missing, summary=summary)
+    total_missing = db.query(Book).filter(Book.thumbnail_url.is_(None)).count(); missing = db.query(Book).filter(Book.thumbnail_url.is_(None), Book.google_books_id != "__readtrackr_no_cover__").count() + db.query(Book).filter(Book.thumbnail_url.is_(None), Book.google_books_id.is_(None)).count()
+    return render(request, "metadata.html", missing=missing, unavailable=total_missing-missing, summary=summary)
 @app.get("/recommendations", response_class=HTMLResponse)
 def recommendations_page(request: Request, db: Session = Depends(get_db)):
     user(request); rows = db.query(Recommendation).options(joinedload(Recommendation.book)).filter(Recommendation.status == "active").order_by(Recommendation.score.desc()).all()

@@ -14,5 +14,13 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+  readtrackr-backfill:
+    build: .
+    container_name: readtrackr-backfill
+    restart: unless-stopped
+    env_file: .env
+    command: ["sh", "-c", "while true; do python -m app.backfill --limit 20; sleep $${BACKFILL_INTERVAL_SECONDS:-21600}; done"]
+    volumes:
+      - readtrackr_data:/app/data
 volumes:
   readtrackr_data:
