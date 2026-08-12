@@ -1,4 +1,5 @@
 import csv, io, json, time
+from datetime import datetime, time as clock_time
 from pathlib import Path
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -38,7 +39,10 @@ def login(request: Request, username: str = Form(), password: str = Form()):
 def logout(request: Request): request.session.clear(); return RedirectResponse("/login", 303)
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request, db: Session = Depends(get_db)):
-    user(request); entries = db.query(UserBook).options(joinedload(UserBook.book)).all(); current = [e for e in entries if e.status == "currently_reading"]; recent = sorted([e for e in entries if e.status == "read"], key=lambda e:e.date_read or e.updated_at, reverse=True)[:6]
+    user(request); entries = db.query(UserBook).options(joinedload(UserBook.book)).all(); current = [e for e in entries if e.status == "currently_reading"]
+    def recent_key(entry):
+        return datetime.combine(entry.date_read, clock_time.min) if entry.date_read else entry.updated_at
+    recent = sorted([e for e in entries if e.status == "read"], key=recent_key, reverse=True)[:6]
     return render(request, "dashboard.html", entries=entries, current=current, recent=recent)
 @app.get("/library", response_class=HTMLResponse)
 def library(request: Request, q: str = "", status: str = "", db: Session = Depends(get_db)):
