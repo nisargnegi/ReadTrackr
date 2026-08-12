@@ -1,0 +1,4 @@
+services:
+  readtrackr:
+    ports:
+      - "3005:8080"

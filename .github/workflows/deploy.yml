@@ -1,0 +1,23 @@
+name: Deploy ReadTrackr
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script: |
+            set -eu
+            APP_DIR="$HOME/apps/readtrackr"
+            REPO_URL="${{ github.server_url }}/${{ github.repository }}.git"
+            if [ ! -d "$APP_DIR/.git" ]; then mkdir -p "$HOME/apps"; git clone "$REPO_URL" "$APP_DIR"; fi
+            cd "$APP_DIR" && git fetch origin main && git reset --hard origin/main
+            printf 'APP_USERNAME=%s\nAPP_PASSWORD_HASH=%s\nSESSION_SECRET=%s\nDEEPSEEK_API_KEY=%s\nGOOGLE_BOOKS_API_KEY=%s\n' "${{ secrets.APP_USERNAME }}" "${{ secrets.APP_PASSWORD_HASH }}" "${{ secrets.SESSION_SECRET }}" "${{ secrets.DEEPSEEK_API_KEY }}" "${{ secrets.GOOGLE_BOOKS_API_KEY }}" > .env
+            docker compose up -d --build
