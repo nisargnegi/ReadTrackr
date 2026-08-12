@@ -1,11 +1,19 @@
-import csv, io, re
+import csv, io, json, re
 from datetime import datetime
+import httpx
 from sqlalchemy import or_, func
 from sqlalchemy.orm import Session
 from .models import Book, UserBook
+from .config import DEEPSEEK_API_KEY, DEEPSEEK_MODEL, GOOGLE_BOOKS_API_KEY
 
 def clean(value): return (value or "").strip()
 def norm(value): return re.sub(r"[^a-z0-9]", "", clean(value).lower())
+def rating_value(value):
+    try:
+        rating = int(float(clean(value)))
+        return rating if 1 <= rating <= 5 else None
+    except ValueError:
+        return None
 def date_value(value):
     value = clean(value)
     for pattern in ("%Y/%m/%d", "%Y-%m-%d", "%m/%d/%Y"):
@@ -39,8 +47,7 @@ def import_goodreads(db: Session, contents: bytes):
         entry = book.entry
         if not entry:
             entry = UserBook(book_id=book.id); db.add(entry)
-        rating = clean(row.get("My Rating"))
-        entry.rating = int(rating) if rating.isdigit() and 1 <= int(rating) <= 5 else None
+        entry.rating = rating_value(row.get("My Rating"))
         shelves = clean(row.get("Exclusive Shelf"))
         entry.status = {"read":"read", "currently-reading":"currently_reading", "to-read":"want_to_read"}.get(shelves, "want_to_read")
         entry.date_added, entry.date_read = date_value(row.get("Date Added")), date_value(row.get("Date Read"))
@@ -50,3 +57,54 @@ def import_goodreads(db: Session, contents: bytes):
         entry.source = "goodreads"
         summary["added" if created else "updated"] += 1
     return summary
+
+def google_lookup(book: Book):
+    query = f"isbn:{book.isbn13 or book.isbn10}" if book.isbn13 or book.isbn10 else f'intitle:"{book.title}" inauthor:"{book.authors}"'
+    params = {"q": query, "maxResults": 1, "printType": "books"}
+    if GOOGLE_BOOKS_API_KEY: params["key"] = GOOGLE_BOOKS_API_KEY
+    response = httpx.get("https://www.googleapis.com/books/v1/volumes", params=params, timeout=10)
+    response.raise_for_status(); items = response.json().get("items", [])
+    if not items: return False
+    item, info = items[0], items[0].get("volumeInfo", {})
+    images = info.get("imageLinks", {}); thumbnail = images.get("thumbnail") or images.get("smallThumbnail")
+    book.google_books_id = item.get("id"); book.title = info.get("title") or book.title
+    book.subtitle = info.get("subtitle"); book.authors = ", ".join(info.get("authors", [])) or book.authors
+    book.description = info.get("description"); book.thumbnail_url = thumbnail.replace("http://", "https://") if thumbnail else book.thumbnail_url
+    book.published_date = info.get("publishedDate"); book.publisher = info.get("publisher")
+    book.page_count = info.get("pageCount"); book.categories = ", ".join(info.get("categories", [])) or None
+    book.language = info.get("language"); book.preview_link = info.get("previewLink")
+    for identifier in info.get("industryIdentifiers", []):
+        if identifier.get("type") == "ISBN_13": book.isbn13 = identifier.get("identifier")
+        if identifier.get("type") == "ISBN_10": book.isbn10 = identifier.get("identifier")
+    return True
+
+def refresh_metadata(db: Session, limit: int = 25):
+    books = db.query(Book).filter(Book.thumbnail_url.is_(None)).order_by(Book.id).limit(limit).all()
+    summary = {"checked": len(books), "updated": 0, "not_found": 0, "errors": 0}
+    for book in books:
+        try:
+            if google_lookup(book): summary["updated"] += 1
+            else: summary["not_found"] += 1
+        except httpx.HTTPError: summary["errors"] += 1
+    db.commit(); return summary
+
+def deepseek_rank(profile, candidates):
+    if not DEEPSEEK_API_KEY: raise ValueError("Add DEEPSEEK_API_KEY in GitHub Actions secrets, then deploy before refreshing recommendations.")
+    prompt = {"profile": profile, "candidates": candidates, "instruction": "Return JSON only with a recommendations array. Rank candidates for this reader. Each result must have title, author, score (0-1), reason (spoiler-free, max two sentences), and matched_preferences (array). Do not invent books."}
+    response = httpx.post("https://api.deepseek.com/chat/completions", headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"}, json={"model": DEEPSEEK_MODEL, "messages": [{"role":"system","content":"You are a careful book recommendation engine. Respond with valid JSON."}, {"role":"user","content":json.dumps(prompt)}], "response_format":{"type":"json_object"}, "max_tokens":2500}, timeout=60)
+    response.raise_for_status(); return json.loads(response.json()["choices"][0]["message"]["content"]).get("recommendations", [])
+
+def google_candidates(authors, excluded_titles):
+    candidates, seen = [], set()
+    for author in authors[:4]:
+        params = {"q": f'inauthor:"{author}"', "maxResults": 10, "printType": "books"}
+        if GOOGLE_BOOKS_API_KEY: params["key"] = GOOGLE_BOOKS_API_KEY
+        try:
+            items = httpx.get("https://www.googleapis.com/books/v1/volumes", params=params, timeout=10).json().get("items", [])
+        except (httpx.HTTPError, ValueError): continue
+        for item in items:
+            info = item.get("volumeInfo", {}); title = info.get("title", ""); candidate_author = ", ".join(info.get("authors", []))
+            key = norm(title)
+            if not title or key in seen or key in excluded_titles: continue
+            seen.add(key); candidates.append({"google_books_id":item.get("id"), "title":title, "author":candidate_author, "thumbnail_url":(info.get("imageLinks", {}).get("thumbnail") or "").replace("http://", "https://"), "categories":info.get("categories", []), "description":info.get("description", "")[:700], "published_date":info.get("publishedDate"), "page_count":info.get("pageCount")})
+    return candidates[:30]

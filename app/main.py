@@ -7,8 +7,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from .auth import verify_password
 from .config import APP_PASSWORD_HASH, APP_USERNAME, DATA_DIR, SESSION_SECRET
 from .database import Base, engine, get_db
-from .models import Book, UserBook
-from .services import import_goodreads
+from .models import Book, Recommendation, RecommendationBatch, UserBook
+from .services import deepseek_rank, google_candidates, import_goodreads, refresh_metadata
 from .views import environment
 Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
 IMPORT_STAGING_FILE = Path(DATA_DIR) / ".goodreads-import-preview.csv"
@@ -78,3 +78,51 @@ def export_library(format:str,request:Request,db:Session=Depends(get_db)):
     if format=="csv":
         out=io.StringIO(); writer=csv.DictWriter(out,fieldnames=["title","authors","status","rating","notes","date_read"]); writer.writeheader(); writer.writerows(records); return Response(out.getvalue(),media_type="text/csv",headers={"Content-Disposition":"attachment; filename=readtrackr.csv"})
     raise HTTPException(404)
+@app.get("/metadata", response_class=HTMLResponse)
+def metadata_page(request: Request, db: Session = Depends(get_db)):
+    user(request); missing = db.query(Book).filter(Book.thumbnail_url.is_(None)).count()
+    return render(request, "metadata.html", missing=missing)
+@app.post("/metadata/refresh", response_class=HTMLResponse)
+def metadata_refresh(request: Request, db: Session = Depends(get_db)):
+    user(request); summary = refresh_metadata(db)
+    missing = db.query(Book).filter(Book.thumbnail_url.is_(None)).count()
+    return render(request, "metadata.html", missing=missing, summary=summary)
+@app.get("/recommendations", response_class=HTMLResponse)
+def recommendations_page(request: Request, db: Session = Depends(get_db)):
+    user(request); recs = db.query(Recommendation).options(joinedload(Recommendation.book)).filter(Recommendation.status == "active").order_by(Recommendation.score.desc()).all()
+    return render(request, "recommendations.html", recs=recs)
+@app.post("/recommendations/refresh", response_class=HTMLResponse)
+def recommendations_refresh(request: Request, db: Session = Depends(get_db)):
+    user(request); entries = db.query(UserBook).options(joinedload(UserBook.book)).all()
+    favorites = sorted([e for e in entries if e.rating and e.rating >= 4], key=lambda e:e.rating, reverse=True)
+    authors = list(dict.fromkeys(e.book.authors for e in favorites if e.book.authors))
+    excluded = {"".join(c for c in e.book.title.lower() if c.isalnum()) for e in entries}
+    candidates = google_candidates(authors, excluded)
+    if not candidates: return render(request, "recommendations.html", recs=[], error="No recommendation candidates found. Refresh book metadata first, then try again.")
+    profile = {"favorite_books":[{"title":e.book.title,"author":e.book.authors,"rating":e.rating,"categories":e.book.categories or ""} for e in favorites[:20]], "avoid":[e.book.title for e in entries if e.rating and e.rating <= 2]}
+    batch = RecommendationBatch(model="deepseek", status="running", candidate_count=len(candidates), prompt_summary="Ratings and favorite authors")
+    db.add(batch); db.flush()
+    try: results = deepseek_rank(profile, candidates)
+    except Exception as exc:
+        batch.status="failed"; batch.error_message=str(exc)[:1000]; db.commit(); return render(request, "recommendations.html", recs=[], error="Could not refresh recommendations: " + str(exc))
+    by_title = {"".join(c for c in item["title"].lower() if c.isalnum()):item for item in candidates}
+    created = 0
+    for result in results:
+        candidate = by_title.get("".join(c for c in result.get("title", "").lower() if c.isalnum()))
+        if not candidate: continue
+        book = db.query(Book).filter(Book.google_books_id == candidate["google_books_id"]).first()
+        if not book:
+            book = Book(title=candidate["title"], authors=candidate["author"], google_books_id=candidate["google_books_id"], thumbnail_url=candidate["thumbnail_url"] or None, categories=", ".join(candidate["categories"]) or None, description=candidate["description"] or None, published_date=candidate["published_date"], page_count=candidate["page_count"]); db.add(book); db.flush()
+        db.add(Recommendation(batch_id=batch.id, book_id=book.id, score=float(result.get("score", 0)), reason=result.get("reason", ""), matched_preferences=", ".join(result.get("matched_preferences", []))))
+        created += 1
+    batch.status="complete"; batch.result_count=created; db.commit()
+    return RedirectResponse("/recommendations", 303)
+@app.post("/recommendations/{recommendation_id}/{action}")
+def recommendation_action(recommendation_id: int, action: str, request: Request, db: Session = Depends(get_db)):
+    user(request); rec = db.get(Recommendation, recommendation_id)
+    if not rec or action not in {"want_to_read", "dismissed", "not_interested"}: raise HTTPException(404)
+    rec.status = action
+    if action == "want_to_read":
+        if not rec.book.entry: db.add(UserBook(book_id=rec.book_id, status="want_to_read", source="recommendation"))
+        else: rec.book.entry.status="want_to_read"
+    db.commit(); return RedirectResponse("/recommendations", 303)

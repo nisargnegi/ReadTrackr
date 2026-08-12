@@ -53,3 +53,17 @@ class RecommendationBatch(Base):
     candidate_count: Mapped[int] = mapped_column(Integer, default=0)
     result_count: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text)
+
+class Recommendation(Base):
+    __tablename__ = "recommendations"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("recommendation_batches.id"), index=True)
+    book_id: Mapped[int] = mapped_column(ForeignKey("books.id"), index=True)
+    score: Mapped[float] = mapped_column(Float, default=0)
+    reason: Mapped[str | None] = mapped_column(Text)
+    matched_preferences: Mapped[str | None] = mapped_column(String(1000))
+    source: Mapped[str] = mapped_column(String(50), default="deepseek")
+    status: Mapped[str] = mapped_column(String(30), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    book: Mapped[Book] = relationship()
