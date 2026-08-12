@@ -11,6 +11,7 @@ from .models import Book, UserBook
 from .services import import_goodreads
 from .views import environment
 Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
+IMPORT_STAGING_FILE = Path(DATA_DIR) / ".goodreads-import-preview.csv"
 Base.metadata.create_all(bind=engine)
 app = FastAPI(title="ReadTrackr")
 app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, https_only=False, same_site="lax")
@@ -64,12 +65,12 @@ def update_book(book_id:int, request:Request, status:str=Form(), rating:str=Form
 def import_page(request:Request): user(request); return render(request,"import.html")
 @app.post("/import/preview",response_class=HTMLResponse)
 async def import_preview(request:Request,csv_file:UploadFile=File()):
-    user(request); data=await csv_file.read(); rows=list(csv.DictReader(io.StringIO(data.decode("utf-8-sig",errors="replace")))); request.session["import_csv"]=data.decode("utf-8-sig",errors="replace"); return render(request,"import.html",preview=rows[:8],total=len(rows))
+    user(request); data=await csv_file.read(); rows=list(csv.DictReader(io.StringIO(data.decode("utf-8-sig",errors="replace")))); IMPORT_STAGING_FILE.write_bytes(data); return render(request,"import.html",preview=rows[:8],total=len(rows))
 @app.post("/import/commit",response_class=HTMLResponse)
 def import_commit(request:Request,db:Session=Depends(get_db)):
-    user(request); contents=request.session.pop("import_csv","").encode()
+    user(request); contents=IMPORT_STAGING_FILE.read_bytes() if IMPORT_STAGING_FILE.exists() else b""
     if not contents: return RedirectResponse("/import",303)
-    summary=import_goodreads(db,contents); db.commit(); return render(request,"import.html",summary=summary)
+    summary=import_goodreads(db,contents); db.commit(); IMPORT_STAGING_FILE.unlink(missing_ok=True); return render(request,"import.html",summary=summary)
 @app.get("/export/{format}")
 def export_library(format:str,request:Request,db:Session=Depends(get_db)):
     user(request); records=[{"title":e.book.title,"authors":e.book.authors,"status":e.status,"rating":e.rating,"notes":e.private_notes,"date_read":str(e.date_read or "")} for e in db.query(UserBook).options(joinedload(UserBook.book)).all()]
