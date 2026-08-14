@@ -116,14 +116,40 @@ def refresh_metadata(db: Session, limit: int = 25):
 
 def deepseek_rank(profile, candidates):
     if not DEEPSEEK_API_KEY: raise ValueError("Add DEEPSEEK_API_KEY in GitHub Actions secrets, then deploy before refreshing recommendations.")
-    prompt = {"profile": profile, "candidates": candidates, "instruction": "Return JSON only with a recommendations array. Rank candidates for this reader. Each result must have title, author, score (0-1), reason (spoiler-free, max two sentences), and matched_preferences (array). Do not invent books."}
+    prompt = {"profile": profile, "candidates": candidates, "instruction": "Return JSON only with a recommendations array of up to 15 diverse recommendations, ordered strongest first. Use public_rating and ratings_count as quality signals, but prioritize fit to the profile. Detect series even when a series hint is not explicit: for any series, return at most one title. Return its highest public-rated title only if it is the first book or clearly works as a standalone; otherwise omit that series. Do not invent books. Every result must have title, author, score (0-1), reason (spoiler-free, max two sentences), and matched_preferences (array)."}
     response = httpx.post("https://api.deepseek.com/chat/completions", headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"}, json={"model": DEEPSEEK_MODEL, "messages": [{"role":"system","content":"You are a careful book recommendation engine. Respond with valid JSON."}, {"role":"user","content":json.dumps(prompt)}], "response_format":{"type":"json_object"}, "max_tokens":2500}, timeout=60)
     response.raise_for_status(); return json.loads(response.json()["choices"][0]["message"]["content"]).get("recommendations", [])
 
 def google_candidates(authors, excluded_titles):
+    return google_candidates_for_profile(authors, [], excluded_titles)
+
+def series_hint(title):
+    """Extract a conservative series label and number from common book-title forms."""
+    match = re.search(r"\(([^()]+?)(?:,|\s)(?:book\s*)?#\s*(\d+)\)", title, re.I)
+    if not match:
+        return None, None
+    return norm(match.group(1)), int(match.group(2))
+
+def filter_series_candidates(candidates):
+    """Keep one safe candidate per detected series before the AI ranking call."""
+    standalone, series = [], {}
+    for candidate in candidates:
+        key, number = series_hint(candidate["title"])
+        if not key:
+            standalone.append(candidate); continue
+        series.setdefault(key, []).append((number, candidate))
+    for entries in series.values():
+        best_number, best = max(entries, key=lambda pair: (pair[1].get("public_rating") or 0, pair[1].get("ratings_count") or 0))
+        # A later volume can be a good book, but is not a safe starting point for a new reader.
+        if best_number == 1:
+            standalone.append(best)
+    return standalone
+
+def google_candidates_for_profile(authors, categories, excluded_titles):
     candidates, seen = [], set()
-    for author in authors[:4]:
-        params = {"q": f'inauthor:"{author}"', "maxResults": 10, "printType": "books"}
+    queries = [(f'inauthor:"{author}"', 20) for author in authors[:5]] + [(f'subject:"{category}"', 12) for category in categories[:4]]
+    for query, max_results in queries:
+        params = {"q": query, "maxResults": max_results, "printType": "books"}
         if GOOGLE_BOOKS_API_KEY: params["key"] = GOOGLE_BOOKS_API_KEY
         try:
             items = httpx.get("https://www.googleapis.com/books/v1/volumes", params=params, timeout=10).json().get("items", [])
@@ -133,4 +159,6 @@ def google_candidates(authors, excluded_titles):
             key = norm(title)
             if not title or key in seen or key in excluded_titles: continue
             seen.add(key); candidates.append({"google_books_id":item.get("id"), "title":title, "author":candidate_author, "thumbnail_url":(info.get("imageLinks", {}).get("thumbnail") or "").replace("http://", "https://"), "categories":info.get("categories", []), "description":info.get("description", "")[:700], "published_date":info.get("publishedDate"), "page_count":info.get("pageCount")})
-    return candidates[:30]
+            candidates[-1]["public_rating"] = info.get("averageRating")
+            candidates[-1]["ratings_count"] = info.get("ratingsCount", 0)
+    return filter_series_candidates(candidates)[:80]

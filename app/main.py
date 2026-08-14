@@ -9,7 +9,7 @@ from .auth import verify_password
 from .config import APP_PASSWORD_HASH, APP_USERNAME, DATA_DIR, SESSION_SECRET
 from .database import Base, engine, get_db
 from .models import Book, Recommendation, RecommendationBatch, UserBook
-from .services import deepseek_rank, google_candidates, import_goodreads, refresh_metadata
+from .services import deepseek_rank, google_candidates_for_profile, import_goodreads, refresh_metadata
 from .views import environment
 Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
 IMPORT_STAGING_FILE = Path(DATA_DIR) / ".goodreads-import-preview.csv"
@@ -104,12 +104,13 @@ def recommendations_refresh(request: Request, db: Session = Depends(get_db)):
     user(request); entries = db.query(UserBook).options(joinedload(UserBook.book)).all()
     favorites = sorted([e for e in entries if e.rating and e.rating >= 4], key=lambda e:e.rating, reverse=True)
     authors = list(dict.fromkeys(e.book.authors for e in favorites if e.book.authors))
+    categories = list(dict.fromkeys(category.strip() for e in favorites for category in (e.book.categories or "").split(",") if category.strip()))
     excluded = {"".join(c for c in e.book.title.lower() if c.isalnum()) for e in entries}
     previous_recommendations = db.query(Recommendation).options(joinedload(Recommendation.book)).filter(Recommendation.status.in_(["dismissed", "not_interested"])).all()
     excluded.update("".join(c for c in recommendation.book.title.lower() if c.isalnum()) for recommendation in previous_recommendations)
-    candidates = google_candidates(authors, excluded)
+    candidates = google_candidates_for_profile(authors, categories, excluded)
     if not candidates: return render(request, "recommendations.html", recs=[], error="No recommendation candidates found. Refresh book metadata first, then try again.")
-    profile = {"favorite_books":[{"title":e.book.title,"author":e.book.authors,"rating":e.rating,"categories":e.book.categories or ""} for e in favorites[:20]], "avoid":[e.book.title for e in entries if e.rating and e.rating <= 2]}
+    profile = {"favorite_books":[{"title":e.book.title,"author":e.book.authors,"rating":e.rating,"categories":e.book.categories or ""} for e in favorites[:20]], "favorite_authors":authors[:8], "favorite_categories":categories[:8], "avoid":[e.book.title for e in entries if e.rating and e.rating <= 2]}
     batch = RecommendationBatch(model="deepseek", status="running", candidate_count=len(candidates), prompt_summary="Ratings and favorite authors")
     db.add(batch); db.flush()
     try: results = deepseek_rank(profile, candidates)
