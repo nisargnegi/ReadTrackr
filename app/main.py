@@ -3,6 +3,7 @@ from datetime import datetime, time as clock_time
 from pathlib import Path
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from sqlalchemy import case
 from sqlalchemy.orm import Session, joinedload
 from starlette.middleware.sessions import SessionMiddleware
 from .auth import verify_password
@@ -49,7 +50,9 @@ def library(request: Request, q: str = "", status: str = "", db: Session = Depen
     user(request); query = db.query(UserBook).options(joinedload(UserBook.book))
     if status: query = query.filter(UserBook.status == status)
     if q: query = query.join(Book).filter((Book.title.ilike(f"%{q}%")) | (Book.authors.ilike(f"%{q}%")))
-    return render(request, "library.html", entries=query.order_by(UserBook.updated_at.desc()).all(), q=q, selected=status)
+    read_first = case((UserBook.status == "read", 0), else_=1)
+    entries = query.order_by(read_first, UserBook.date_read.desc(), UserBook.updated_at.desc()).all()
+    return render(request, "library.html", entries=entries, q=q, selected=status)
 @app.get("/books/new", response_class=HTMLResponse)
 def new_book(request: Request): user(request); return render(request, "book_form.html", book=None, entry=None)
 @app.post("/books/new")
@@ -118,7 +121,7 @@ def recommendations_refresh(request: Request, db: Session = Depends(get_db)):
         batch.status="failed"; batch.error_message=str(exc)[:1000]; db.commit(); return render(request, "recommendations.html", recs=[], error="Could not refresh recommendations: " + str(exc))
     by_title = {"".join(c for c in item["title"].lower() if c.isalnum()):item for item in candidates}
     created, selected_books = 0, set()
-    for result in results:
+    for result in results[:24]:
         candidate = by_title.get("".join(c for c in result.get("title", "").lower() if c.isalnum()))
         if not candidate: continue
         book = db.query(Book).filter(Book.google_books_id == candidate["google_books_id"]).first()
